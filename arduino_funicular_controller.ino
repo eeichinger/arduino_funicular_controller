@@ -43,18 +43,17 @@
 
 #define RST_PIN         9          // Configurable, see typical pin layout above
 #define SS_PIN          10         // Configurable, see typical pin layout above
-#define TRIG_PIN        7
-#define ECHO_PIN        8
+#define TRIG_PIN        7          // ultrasonic trig
+#define ECHO_PIN        8          // ultrasonic echo
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);  // Create MFRC522 instance
-HCSR04 hcsr04(TRIG_PIN, ECHO_PIN, 20, 4000);
+HCSR04 hcsr04(TRIG_PIN, ECHO_PIN, 20, 4000); // ultrasonic sensor instance
 
 void setup() {
   Serial.begin(9600);   // Initialize serial communications with the PC
   while (!Serial);    // Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
   SPI.begin();      // Init SPI bus
   mfrc522.PCD_Init();   // Init MFRC522
-  mfrc522.PCD_AntennaOff();
   mfrc522.PCD_SetAntennaGain(MFRC522::PCD_RxGain::RxGain_max);
   mfrc522.PCD_AntennaOn();
   delay(4);       // Optional delay. Some board do need more time after init to be ready, see Readme
@@ -77,7 +76,7 @@ long distanceMillsAvg(HCSR04 hcsr04, int waitMillis, int count) {
   }
 
   for (int x = 0; x < count + 2; x++) {
-    d = hcsr04.distanceInMillimeters()/2;
+    d = hcsr04.distanceInMillimeters() / 2;
 
     if (d < min) {
       min = d;
@@ -95,39 +94,96 @@ long distanceMillsAvg(HCSR04 hcsr04, int waitMillis, int count) {
   avg -= (max + min);
   // calculate average
   avg /= count;
-  return avg*2;
+  return avg * 2;
 }
 
-long distance1 = 0;
+long distance_old = 0;
+const int speed_max = 100;
+const int speed_steps = speed_max / 10;
+int speed_cur = 0;
+int direction_cur = -1; // 1 or -1
+int is_running = 0;
+
+const byte car_uid[][7] = {
+  {0x04, 0xC1, 0xF4, 0x72, 0x84, 0x5C, 0x80},
+  {0x04, 0x4F, 0xF5, 0x72, 0x84, 0x5C, 0x81}
+};
+
+int array_len(byte arr[]) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsizeof-array-argument"
+  return sizeof(*arr) / sizeof(byte);
+#pragma GCC diagnostic pop
+}
+
+template <typename T> int array_len(const T arr[]) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsizeof-array-argument"
+  return sizeof(arr) / sizeof(T);
+#pragma GCC diagnostic pop
+}
+
+void dump_uid(int len, const byte uid[]) {
+  for (byte i = 0; i < len; i++) {
+    Serial.print(uid[i] < 0x10 ? " 0" : " ");
+    Serial.print(uid[i], HEX);
+  }
+}
+bool is_uid(int len, const byte uid_left[], const byte uid_right[]) {
+//  if (array_len(uid_left) != array_len(uid_right)) {
+//    return false;
+//  }
+//  int len = array_len(uid_left);
+  for (byte i = 0; i < len; i++) {
+    if (uid_left[i] != uid_right[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int check_car_in_station(byte uidByte[]) {
+  for (int i = 0; i < 2; i++) {
+    if (is_uid(7, mfrc522.uid.uidByte, car_uid[i])) {
+    return i;
+  }
+}
+return -1;
+}
 
 void loop() {
-  delay(250);
-  long distance2;
+  Serial.println("");
+  delay(500);
+  long distance_cur;
+  int car_in_station;
 
-  distance2 = distanceMillsAvg(hcsr04, 1, 5);
-  if (distance1 > distance2) {
-    Serial.print("moving closer: ");
-    Serial.println(distance2);
-  } if (distance1 < distance2) {
-    Serial.print("moving away: ");
-    Serial.println(distance1);
+  distance_cur = distanceMillsAvg(hcsr04, 1, 5);
+//  Serial.print(distance_cur);
+  if (distance_old > distance_cur) {
+    //    Serial.println(" - moving closer");
+  } if (distance_old < distance_cur) {
+    //    Serial.println(" - moving away");
   } else {
-    Serial.print("not moving");
-    Serial.println(distance1);
+    //    Serial.println(" - not moving");
   }
-  distance1=distance2;
   //  Serial.println(hcsr04.ToString());
 
+  car_in_station = -1; // -1: no car detected, else 0-based car number (0,1)
   // Reset the loop if no new card present on the sensor/reader. This saves the entire process when idle.
-  if ( ! mfrc522.PICC_IsNewCardPresent()) {
-    return;
+  mfrc522.PCD_AntennaOn();
+  if ( mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    Serial.print("detected car");
+    dump_uid(7, mfrc522.uid.uidByte);
+    Serial.println();
+    car_in_station = check_car_in_station(mfrc522.uid.uidByte);
   }
+  mfrc522.PCD_AntennaOff();
+  Serial.print("car in station: ");
+  Serial.print(car_in_station == -1 ? "-" : String(car_in_station));
+  Serial.print(", distance: ");
+  Serial.print(distance_cur);
+  Serial.print(", prev distance: ");
+  Serial.print(distance_old);
 
-  // Select one of the cards
-  if ( ! mfrc522.PICC_ReadCardSerial()) {
-    return;
-  }
-
-  // Dump debug info about the card; PICC_HaltA() is automatically called
-  mfrc522.PICC_DumpToSerial(&(mfrc522.uid));
+  distance_old = distance_cur;
 }
